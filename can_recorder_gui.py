@@ -13,7 +13,8 @@ from PySide6.QtGui import QColor, QPainter, QPen, QRegion
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView, QHeaderView)
+    QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView, QHeaderView,
+    QListWidget, QListWidgetItem, QScrollArea)
 
 try:
     from .design import DropdownComboBox
@@ -91,6 +92,38 @@ class RoundedTraceTable(QTableWidget):
         self.setMask(mask)
 
 
+class ChannelListWidget(QListWidget):
+    """Always-visible, scrollable channel picker with full-row toggling."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("channelList")
+        self.setFixedHeight(112)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        item = self.itemAt(event.position().toPoint())
+        if item is not None and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+            item.setCheckState(
+                Qt.CheckState.Unchecked
+                if item.checkState() == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def checked_data(self) -> list[object]:
+        return [
+            self.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(self.count())
+            if self.item(index).checkState() == Qt.CheckState.Checked
+        ]
+
+
 class CanRecorderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -100,13 +133,14 @@ class CanRecorderWindow(QMainWindow):
         self.recorder: CanRecorder | None = None
         self.started_at: datetime | None = None
         self._message_queue: queue.Queue[tuple[datetime, can.Message]] = queue.Queue()
-        self._trace_rows: dict[int, int] = {}
+        self._trace_rows: dict[tuple[object, int], int] = {}
+        self._active_channel_label: str | None = None
 
         self.interface = DropdownComboBox()
         self.interface.setEditable(False)
         self.interface.addItems(["slcan", "vector"])
-        self.channel = DropdownComboBox()
-        self.channel.setEditable(False)
+        self.channel = ChannelListWidget()
+        self.channel.itemChanged.connect(self._channel_item_changed)
         self.refresh_ports = QPushButton("Refresh")
         self.refresh_ports.clicked.connect(self._load_channels)
         self.interface.currentTextChanged.connect(self._interface_changed)
@@ -119,15 +153,20 @@ class CanRecorderWindow(QMainWindow):
         output_row = QHBoxLayout()
         output_row.addWidget(self.output)
         output_row.addWidget(browse)
-        channel_row = QHBoxLayout()
-        channel_row.addWidget(self.channel)
-        channel_row.addWidget(self.refresh_ports)
+        channel_panel = QVBoxLayout()
+        channel_panel.setContentsMargins(0, 0, 0, 0)
+        channel_panel.setSpacing(8)
+        channel_panel.addWidget(self.channel)
+        refresh_row = QHBoxLayout()
+        refresh_row.setContentsMargins(0, 0, 0, 0)
+        refresh_row.addWidget(self.refresh_ports, 1)
+        channel_panel.addLayout(refresh_row)
         self.receive_own = QCheckBox("Receive own transmitted messages")
         self.receive_own.setChecked(True)
 
         form = QFormLayout()
         form.addRow("CAN interface", self.interface)
-        form.addRow("Channel / port", channel_row)
+        form.addRow("Channel / port", channel_panel)
         form.addRow("Bitrate (kbits/s)", self.bitrate)
         form.addRow("ASC output file", output_row)
         form.addRow("", self.receive_own)
@@ -168,10 +207,21 @@ class CanRecorderWindow(QMainWindow):
 
         left_panel = QWidget()
         left_panel.setLayout(root)
+        left_panel.setMinimumWidth(340)
 
-        self.trace = RoundedTraceTable(0, 4)
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("leftPanelScroll")
+        left_scroll.setMinimumWidth(360)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll.setWidget(left_panel)
+
+        self.trace = RoundedTraceTable(0, 5)
         self.trace.setObjectName("traceTable")
-        self.trace.setHorizontalHeaderLabels(["Time", "ID", "DLC", "Data"])
+        self.trace.setHorizontalHeaderLabels(["Time", "Channel", "ID", "DLC", "Data"])
+        self._update_trace_channel_header()
         self.trace.setAlternatingRowColors(True)
         self.trace.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.trace.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -181,7 +231,8 @@ class CanRecorderWindow(QMainWindow):
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
         trace_box = RoundedCard()
         trace_layout = QVBoxLayout(trace_box)
         trace_layout.setContentsMargins(22, 20, 22, 22)
@@ -200,7 +251,7 @@ class CanRecorderWindow(QMainWindow):
         trace_layout.addWidget(trace_frame)
 
         splitter = QSplitter()
-        splitter.addWidget(left_panel)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(trace_box)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -219,6 +270,27 @@ class CanRecorderWindow(QMainWindow):
                 color: #172033;
                 font-family: "Segoe UI";
                 font-size: 13px;
+            }
+            QScrollArea#leftPanelScroll {
+                border: none;
+                background: transparent;
+            }
+            QScrollArea#leftPanelScroll > QWidget > QWidget {
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                width: 10px;
+                border: none;
+                border-radius: 5px;
+                background: #e7ecf3;
+            }
+            QScrollBar::handle:vertical {
+                min-height: 28px;
+                border-radius: 4px;
+                background: #aebaca;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
             }
             QLabel#helperText {
                 color: #68758a;
@@ -250,6 +322,40 @@ class CanRecorderWindow(QMainWindow):
             QComboBox::drop-down {
                 width: 28px;
                 border: none;
+            }
+            QListWidget#channelList {
+                border: 1px solid #ccd6e4;
+                border-radius: 8px;
+                background: #f8fafd;
+                color: #1d2940;
+                padding: 2px;
+            }
+            QListWidget#channelList::item {
+                min-height: 30px;
+                padding: 4px 8px;
+                border-radius: 5px;
+            }
+            QListWidget#channelList::item:hover {
+                background: #eaf1fc;
+            }
+            QListWidget#channelList::indicator {
+                width: 15px;
+                height: 15px;
+            }
+            QListWidget#channelList QScrollBar:vertical {
+                width: 10px;
+                border: none;
+                border-radius: 5px;
+                background: #e7ecf3;
+            }
+            QListWidget#channelList QScrollBar::handle:vertical {
+                min-height: 24px;
+                border-radius: 4px;
+                background: #aebaca;
+            }
+            QListWidget#channelList QScrollBar::add-line:vertical,
+            QListWidget#channelList QScrollBar::sub-line:vertical {
+                height: 0;
             }
             QCheckBox {
                 color: #344157;
@@ -343,8 +449,12 @@ class CanRecorderWindow(QMainWindow):
                     name = config.get("vector_channel_config").name
                     if name.lower().startswith("virtual"):
                         continue
-                    channels.append(f"{name} (SN {config.get('serial')})")
-                    channel_data.append(config.get("channel"))
+                    serial = config.get("serial")
+                    channels.append(f"{name} (SN {serial})")
+                    channel_data.append({
+                        "channel": config.get("channel"),
+                        "serial": serial,
+                    })
             except Exception:
                 pass
         else:
@@ -353,19 +463,47 @@ class CanRecorderWindow(QMainWindow):
                 channels = sorted({p.device for p in list_ports.comports()})
             except Exception:
                 pass
-        current = self.channel.currentText()
         self.channel.clear()
+        self.channel.blockSignals(True)
         if channels:
             for index, value in enumerate(channels):
-                self.channel.addItem(value, channel_data[index] if channel_data else value)
-            self.channel.setCurrentText(current if current in channels else channels[0])
+                item = QListWidgetItem(value)
+                item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    channel_data[index] if channel_data else value,
+                )
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.CheckState.Checked if index == 0 else Qt.CheckState.Unchecked
+                )
+                self.channel.addItem(item)
         else:
-            self.channel.addItem("No channels detected")
-            self.channel.setCurrentText("")
-        self.channel.setEditable(False)
+            item = QListWidgetItem("No channels detected")
+            item.setData(Qt.ItemDataRole.UserRole, None)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.channel.addItem(item)
+        self.channel.blockSignals(False)
+
+    def _channel_item_changed(self, changed_item: QListWidgetItem) -> None:
+        if self.interface.currentText() == "vector":
+            return
+        if changed_item.checkState() != Qt.CheckState.Checked:
+            return
+        self.channel.blockSignals(True)
+        for index in range(self.channel.count()):
+            item = self.channel.item(index)
+            if item is not changed_item:
+                item.setCheckState(Qt.CheckState.Unchecked)
+        self.channel.blockSignals(False)
 
     def _interface_changed(self, _interface: str) -> None:
+        if hasattr(self, "trace"):
+            self._update_trace_channel_header()
         self._load_channels()
+
+    def _update_trace_channel_header(self) -> None:
+        title = "COM port" if self.interface.currentText() == "slcan" else "Channel"
+        self.trace.setHorizontalHeaderItem(1, QTableWidgetItem(title))
 
     def _browse_output(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(self, "Save ASC recording", self.output.text(), "ASC trace (*.asc)")
@@ -377,9 +515,12 @@ class CanRecorderWindow(QMainWindow):
             self._stop_recording()
             return
         try:
-            channel = self.channel.currentData()
-            if channel is None:
-                channel = self.channel.currentText()
+            selected_channels = self.channel.checked_data()
+            if self.interface.currentText() == "vector":
+                channel = selected_channels
+            else:
+                channel = selected_channels[0] if selected_channels else None
+            self._active_channel_label = str(channel) if channel is not None else None
             self.recorder = CanRecorder(self.interface.currentText(), channel,
                                         int(self.bitrate.text()) * 1000, self.output.text(),
                                         self.receive_own.isChecked(),
@@ -402,6 +543,7 @@ class CanRecorderWindow(QMainWindow):
     def _stop_recording(self) -> None:
         if self.recorder:
             self.recorder.stop()
+        self._active_channel_label = None
         self.timer.stop()
         self.status.setText(f"Saved {self.output.text()}")
         self.status.setStyleSheet("font-weight: bold; color: #287d3c;")
@@ -438,16 +580,21 @@ class CanRecorderWindow(QMainWindow):
                 return
 
             message_id = int(message.arbitration_id)
-            row = self._trace_rows.get(message_id)
+            message_channel = getattr(message, "channel", None)
+            if message_channel is None and self.interface.currentText() == "slcan":
+                message_channel = self._active_channel_label
+            row_key = (message_channel, message_id)
+            row = self._trace_rows.get(row_key)
             if row is None:
                 row = self.trace.rowCount()
                 self.trace.insertRow(row)
-                self._trace_rows[message_id] = row
+                self._trace_rows[row_key] = row
 
             elapsed = ((received_at - self.started_at).total_seconds()
                        if self.started_at else 0.0)
             values = (
                 f"{elapsed:9.3f}",
+                str(message_channel) if message_channel is not None else "—",
                 f"0x{message_id:08X}" if message.is_extended_id else f"0x{message_id:03X}",
                 str(message.dlc),
                 " ".join(f"{byte:02X}" for byte in message.data),
@@ -458,7 +605,7 @@ class CanRecorderWindow(QMainWindow):
                     item = QTableWidgetItem()
                     self.trace.setItem(row, column, item)
                 item.setText(value)
-                if column == 1:
+                if column == 2:
                     item.setData(32, message_id)
 
     def closeEvent(self, event) -> None:  # noqa: N802
