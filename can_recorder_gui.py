@@ -140,7 +140,6 @@ class CanRecorderWindow(QMainWindow):
         self.interface.setEditable(False)
         self.interface.addItems(["slcan", "vector"])
         self.channel = ChannelListWidget()
-        self.channel.itemChanged.connect(self._channel_item_changed)
         self.refresh_ports = QPushButton("Refresh")
         self.refresh_ports.clicked.connect(self._load_channels)
         self.interface.currentTextChanged.connect(self._interface_changed)
@@ -180,7 +179,7 @@ class CanRecorderWindow(QMainWindow):
         settings_help.setObjectName("helperText")
         settings_help.setWordWrap(True)
         settings_layout.addWidget(settings_title)
-        settings_layout.addWidget(settings_help)
+        # settings_layout.addWidget(settings_help)
         settings_layout.addLayout(form)
 
         self.record_button = QPushButton("Start recording")
@@ -484,18 +483,6 @@ class CanRecorderWindow(QMainWindow):
             self.channel.addItem(item)
         self.channel.blockSignals(False)
 
-    def _channel_item_changed(self, changed_item: QListWidgetItem) -> None:
-        if self.interface.currentText() == "vector":
-            return
-        if changed_item.checkState() != Qt.CheckState.Checked:
-            return
-        self.channel.blockSignals(True)
-        for index in range(self.channel.count()):
-            item = self.channel.item(index)
-            if item is not changed_item:
-                item.setCheckState(Qt.CheckState.Unchecked)
-        self.channel.blockSignals(False)
-
     def _interface_changed(self, _interface: str) -> None:
         if hasattr(self, "trace"):
             self._update_trace_channel_header()
@@ -516,10 +503,7 @@ class CanRecorderWindow(QMainWindow):
             return
         try:
             selected_channels = self.channel.checked_data()
-            if self.interface.currentText() == "vector":
-                channel = selected_channels
-            else:
-                channel = selected_channels[0] if selected_channels else None
+            channel = selected_channels
             self._active_channel_label = str(channel) if channel is not None else None
             self.recorder = CanRecorder(self.interface.currentText(), channel,
                                         int(self.bitrate.text()) * 1000, self.output.text(),
