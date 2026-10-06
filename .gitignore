@@ -1,1 +1,4 @@
 *.asc
+build/
+dist/
+*.spec
