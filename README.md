@@ -27,6 +27,27 @@ Run the graphical interface from the project folder:
 python can_recorder_gui.py
 ```
 
+## Creating a standalone Windows executable
+
+The project includes `build_exe.ps1` for creating a single executable file.
+
+Run it from PowerShell in the project folder:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\build_exe.ps1
+```
+
+The executable is created at:
+
+```text
+dist\CAN_ASC_Recorder.exe
+```
+
+The executable contains the Python runtime and application dependencies, so Python does not need to be installed on the target computer. The target computer still needs the appropriate hardware drivers, especially for Vector interfaces.
+
+The generated executable is a Windows GUI application and does not open a console window. The `build`, `dist`, and generated `.spec` files are temporary packaging artifacts and do not need to be copied into the distribution folder. Keep `CAN_ASC_Recorder.exe` together with any required hardware drivers and vendor software.
+
 The application opens with two main areas:
 
 - **Recording settings** on the left
@@ -96,6 +117,8 @@ Once recording has started:
 - New CAN messages appear in the live trace.
 
 Click **Stop recording** to stop capturing and close the ASC log safely. The recording controls become available again after stopping.
+
+While recording continues, the ASC file is flushed to disk approximately every five minutes. This means measurements captured so far are saved progressively instead of waiting until the recording is stopped. The final data is also flushed when recording ends.
 
 ## Live CAN trace
 

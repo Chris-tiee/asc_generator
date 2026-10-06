@@ -41,12 +41,21 @@ class _MessageCounter(can.Listener):
 
 
 class _ThreadSafeAscLogger(can.Listener):
-    """Share one ASC logger between buses without closing it mid-callback."""
+    """Share one ASC logger and periodically flush it to disk."""
+
+    _FLUSH_INTERVAL_SECONDS = 5 * 60
 
     def __init__(self, output_file: Path) -> None:
         self._logger = can.Logger(str(output_file))
         self._lock = threading.RLock()
         self._closed = False
+        self._flush_stop = threading.Event()
+        self._flush_thread = threading.Thread(
+            target=self._flush_periodically,
+            name="can-asc-flush",
+            daemon=True,
+        )
+        self._flush_thread.start()
 
     def on_message_received(self, msg: can.Message) -> None:
         with self._lock:
@@ -58,10 +67,21 @@ class _ThreadSafeAscLogger(can.Listener):
         # only after all notifiers have stopped.
         return
 
+    def _flush_periodically(self) -> None:
+        while not self._flush_stop.wait(self._FLUSH_INTERVAL_SECONDS):
+            with self._lock:
+                if self._closed:
+                    return
+                file = getattr(self._logger, "file", None)
+                if file is not None and not file.closed:
+                    file.flush()
+
     def close(self) -> None:
         with self._lock:
             if not self._closed:
                 self._closed = True
+                self._flush_stop.set()
+                self._flush_thread.join(timeout=1.0)
                 self._logger.stop()
 
 
