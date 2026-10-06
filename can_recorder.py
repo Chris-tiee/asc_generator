@@ -10,14 +10,18 @@ import can
 
 
 class _MessageCounter(can.Listener):
-    def __init__(self, callback: Callable[[int], None] | None = None):
+    def __init__(self, callback: Callable[[int], None] | None = None,
+                 message_callback: Callable[[can.Message], None] | None = None):
         self.count = 0
         self.callback = callback
+        self.message_callback = message_callback
 
     def on_message_received(self, msg: can.Message) -> None:
         self.count += 1
         if self.callback:
             self.callback(self.count)
+        if self.message_callback:
+            self.message_callback(msg)
 
 
 class CanRecorder:
@@ -25,13 +29,15 @@ class CanRecorder:
 
     def __init__(self, interface: str, channel: str | int, bitrate: int,
                  output_file: str | Path, receive_own_messages: bool = True,
-                 on_message_count: Callable[[int], None] | None = None) -> None:
+                 on_message_count: Callable[[int], None] | None = None,
+                 on_message: Callable[[can.Message], None] | None = None) -> None:
         self.interface = interface.strip()
         self.channel = channel.strip() if isinstance(channel, str) else channel
         self.bitrate = int(bitrate)
         self.output_file = Path(output_file)
         self.receive_own_messages = receive_own_messages
         self.on_message_count = on_message_count
+        self.on_message = on_message
         self._bus: can.Bus | None = None
         self._notifier: can.Notifier | None = None
         self._logger: can.Logger | None = None
@@ -61,7 +67,7 @@ class CanRecorder:
                                     receive_own_messages=self.receive_own_messages,
                                     rx_queue_size=1024)
                 self._logger = can.Logger(str(self.output_file))
-                self._counter = _MessageCounter(self.on_message_count)
+                self._counter = _MessageCounter(self.on_message_count, self.on_message)
                 self._notifier = can.Notifier(self._bus, [self._logger, self._counter])
             except Exception:
                 self._cleanup()

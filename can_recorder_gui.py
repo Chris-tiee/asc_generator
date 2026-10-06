@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import queue
 from datetime import datetime
 from pathlib import Path
 
@@ -10,7 +11,8 @@ import can
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+    QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView, QHeaderView)
 
 try:
     # Package execution: python -m asc_generator.can_recorder_gui
@@ -24,9 +26,11 @@ class CanRecorderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("CAN ASC Recorder")
-        self.setMinimumWidth(560)
+        self.setMinimumSize(980, 560)
         self.recorder: CanRecorder | None = None
         self.started_at: datetime | None = None
+        self._message_queue: queue.Queue[tuple[datetime, can.Message]] = queue.Queue()
+        self._trace_rows: dict[int, int] = {}
 
         self.interface = QComboBox()
         self.interface.setEditable(True)
@@ -79,12 +83,40 @@ class CanRecorderWindow(QMainWindow):
         root.addWidget(self.record_button)
         root.addLayout(info)
         root.addStretch()
-        container = QWidget()
-        container.setLayout(root)
-        self.setCentralWidget(container)
+
+        left_panel = QWidget()
+        left_panel.setLayout(root)
+
+        self.trace = QTableWidget(0, 5)
+        self.trace.setHorizontalHeaderLabels(["Time", "ID", "DLC", "Data", "Type"])
+        self.trace.setAlternatingRowColors(True)
+        self.trace.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.trace.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.trace.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.trace.verticalHeader().setVisible(False)
+        header = self.trace.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        trace_box = QGroupBox("Live CAN trace (latest message per ID)")
+        trace_layout = QVBoxLayout(trace_box)
+        trace_layout.addWidget(self.trace)
+
+        splitter = QSplitter()
+        splitter.addWidget(left_panel)
+        splitter.addWidget(trace_box)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([360, 700])
+        self.setCentralWidget(splitter)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_elapsed)
+        self.trace_timer = QTimer(self)
+        self.trace_timer.timeout.connect(self._drain_message_queue)
+        self.trace_timer.start(100)
 
     def _load_channels(self) -> None:
         interface = self.interface.currentText()
@@ -137,7 +169,9 @@ class CanRecorderWindow(QMainWindow):
                 channel = self.channel.currentText()
             self.recorder = CanRecorder(self.interface.currentText(), channel,
                                         int(self.bitrate.currentText()), self.output.text(),
-                                        self.receive_own.isChecked())
+                                        self.receive_own.isChecked(),
+                                        on_message=self._message_received)
+            self._clear_trace()
             self.recorder.start()
         except Exception as exc:
             self.recorder = None
@@ -169,6 +203,54 @@ class CanRecorderWindow(QMainWindow):
         if self.started_at:
             seconds = int((datetime.now() - self.started_at).total_seconds())
             self.elapsed.setText(f"Duration: {seconds // 3600:02}:{seconds % 3600 // 60:02}:{seconds % 60:02}")
+
+    def _message_received(self, message: can.Message) -> None:
+        """Called by python-can's worker thread; do not touch Qt widgets here."""
+        self._message_queue.put((datetime.now(), message))
+
+    def _clear_trace(self) -> None:
+        self.trace.setRowCount(0)
+        self._trace_rows.clear()
+        while not self._message_queue.empty():
+            try:
+                self._message_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _drain_message_queue(self) -> None:
+        while True:
+            try:
+                received_at, message = self._message_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            message_id = int(message.arbitration_id)
+            row = self._trace_rows.get(message_id)
+            if row is None:
+                row = self.trace.rowCount()
+                self.trace.insertRow(row)
+                self._trace_rows[message_id] = row
+
+            elapsed = ((received_at - self.started_at).total_seconds()
+                       if self.started_at else 0.0)
+            frame_type = "Error" if message.is_error_frame else (
+                "Remote" if message.is_remote_frame else (
+                    "Extended" if message.is_extended_id else "Data"))
+            values = (
+                f"{elapsed:9.3f}",
+                f"0x{message_id:08X}" if message.is_extended_id else f"0x{message_id:03X}",
+                str(message.dlc),
+                " ".join(f"{byte:02X}" for byte in message.data),
+                frame_type,
+            )
+            for column, value in enumerate(values):
+                item = self.trace.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.trace.setItem(row, column, item)
+                item.setText(value)
+                if column == 1:
+                    item.setData(32, message_id)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.recorder and self.recorder.is_recording:
