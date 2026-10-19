@@ -89,14 +89,13 @@ class CanRecorder:
     """Open a CAN bus and continuously write received messages to an ASC file."""
 
     def __init__(self, interface: str, channel: str | int | list[dict[str, Any]], bitrate: int,
-                 output_file: str | Path, receive_own_messages: bool = True,
+                 output_file: str | Path,
                  on_message_count: Callable[[int], None] | None = None,
                  on_message: Callable[[can.Message], None] | None = None) -> None:
         self.interface = interface.strip()
         self.channel = channel.strip() if isinstance(channel, str) else channel
         self.bitrate = int(bitrate)
         self.output_file = Path(output_file)
-        self.receive_own_messages = receive_own_messages
         self.on_message_count = on_message_count
         self.on_message = on_message
         self._buses: list[can.Bus] = []
@@ -152,7 +151,6 @@ class CanRecorder:
         common = {
             "interface": self.interface,
             "bitrate": self.bitrate,
-            "receive_own_messages": self.receive_own_messages,
             "rx_queue_size": 1024,
         }
         if self.interface != "vector":
