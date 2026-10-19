@@ -12,7 +12,7 @@ from pathlib import Path
 import can
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog,
+from PySide6.QtWidgets import (QApplication, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView, QHeaderView,
@@ -89,15 +89,11 @@ class CanRecorderWindow(QMainWindow):
         refresh_row.setContentsMargins(0, 0, 0, 0)
         refresh_row.addWidget(self.refresh_ports, 1)
         channel_panel.addLayout(refresh_row)
-        self.receive_own = QCheckBox("Receive own transmitted messages")
-        self.receive_own.setChecked(True)
-
         form = QFormLayout()
         form.addRow("CAN interface", self.interface)
         form.addRow("Channel / port", channel_panel)
         form.addRow("Bitrate (kbits/s)", self.bitrate)
         form.addRow("ASC output file", output_row)
-        form.addRow("", self.receive_own)
         settings = RoundedCard()
         settings_layout = QVBoxLayout(settings)
         settings_layout.setContentsMargins(22, 20, 22, 22)
@@ -319,7 +315,6 @@ class CanRecorderWindow(QMainWindow):
             self._active_channel_label = str(channel) if channel is not None else None
             recorder = CanRecorder(self._selected_interface(), channel,
                                    int(self.bitrate.text()) * 1000, self.output.text(),
-                                   self.receive_own.isChecked(),
                                    on_message=self._message_received)
             self._clear_trace()
         except Exception as exc:
